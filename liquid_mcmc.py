@@ -10,17 +10,31 @@ from numba.experimental import jitclass
 from numba.typed import List
 import numba as nb
 import ctypes
+import time
+
+import argparse
+
+parser = argparse.ArgumentParser(description='MCMC simulation of liquid droplet morphologies')
+#parser.add_argument('integers', metavar='N', type=int, nargs='+',
+#                    help='an integer for the accumulator')
+parser.add_argument('--kT', type=float, default=1.0, help='temperature')
+parser.add_argument('--J', type=float, default=1.0, help='coupling constant')
+parser.add_argument('--vf', type=float, default=0.5, help='volume fraction')
+parser.add_argument('--niters', type=int, default=1000000, help='number of iterations')
+parser.add_argument('--burnin', type=int, default=10000, help='number of burn-in iterations')
+parser.add_argument('--nrows', type=int, default=40, help='number of rows')
+parser.add_argument('--ncols', type=int, default=40, help='number of cols')
+parser.add_argument('--outdir', type=int, default="temp", help='number of burn-in iterations')
+
+args = parser.parse_args()
 
 prob_bb_base = 0.0
 prob_bi_base = 0.0
 prob_ii_base = 0.0
 
-
-
 prob_bb_expansion = 0.0
 prob_bi_expansion = 0.0
 prob_ii_expansion = 0.0
-
 
 #hash table hashes row_col node to corresponding
 #index in its list --- useful for fast deletes
@@ -41,28 +55,27 @@ interior_atoms_list_specie2 = []
 # H = -J Sum( Si Sj) 
 spin_array = 0
 spin_array_initial = 0
+cid_array = 0
 
+global rg = np.random.default_rng(int(time.time()))
 
-#type_ is either 0, 1, 2
-#type_ = 0 all spins are down
-#type_ = 1 all spins are up 
-#type_ = 2 all initialized randomly 
-def initialize_spin_lattice(num_row, num_col, type_):
+def initialize_spin_lattice(nrows, ncols, vf=0.5):
 	global spin_array
-	spin_array = np.zeros((num_row, num_col))
-	for i in range(num_row):
-		for j in range(num_col):
-			if type_ == 0: 
-				spin_array[i][j] = -1 
-			elif type_ == 1: 
-				spin_array[i][j] = 1
-			elif type_ == 2: 
-				x = random.random() 
-				if x < 0.5: 
-					spin_array[i][j] = -1
-				else:
-					spin_array[i][j] = 1
-
+    global rg
+	spin_array_flat = -1*np.ones(nrows*ncols, int)
+    nsite = spin_array_flat.size
+    nplace = int(nsite*vf)
+    for i in range(nplace):
+        j = np.random.choice(range(nsite-i))
+        count = 0
+        for k in range(nsite):
+            if spin_array_flat[k] == -1:
+                if count == j:
+                    spin_array_flat[k] = 1
+                    break
+                else:
+                    count += 1
+    spin_array = spin_array_flat.reshape(nrows, ncols)
 
 @nb.extending.intrinsic
 def address_as_void_pointer(typingctx, src):
@@ -81,7 +94,7 @@ def is_boundary_atom(spin_tuple, row, col):
 	shape = spin_tuple[1]
 	dtype = spin_tuple[2]
 	spin_array = nb.carray(address_as_void_pointer(addr), shape, dtype=dtype)
-	num_row, num_col = shape
+	nrows, ncols = shape
 	spin_type = spin_array[row][col]
 	
 	#an atom is a boundary if atleast one
@@ -90,16 +103,16 @@ def is_boundary_atom(spin_tuple, row, col):
 	is_boundary = False
 
 	#check rigt neighbor 
-	if spin_array[row][(col + 1) % num_col] != spin_type:
+	if spin_array[row][(col + 1) % ncols] != spin_type:
 		is_boundary = True
 	#check bottom neighbor 
-	elif spin_array[(row + 1)%num_row][col] != spin_type:
+	elif spin_array[(row + 1)%nrows][col] != spin_type:
 		is_boundary = True
 	#check left neighbor 
-	elif spin_array[row][(col - 1) % num_col] != spin_type:
+	elif spin_array[row][(col - 1) % ncols] != spin_type:
 		is_boundary = True 
 	#check above neighbor 
-	elif spin_array[(row - 1) % num_row][col] != spin_type:
+	elif spin_array[(row - 1) % nrows][col] != spin_type:
 		is_boundary = True
 
 	return is_boundary
@@ -182,16 +195,16 @@ def num_to_row_col(num, max_power):
 
 #computes the power of the maximum edge
 @jit(nopython=True)
-def compute_max_power(num_row, num_col):
+def compute_max_power(nrows, ncols):
 	x = 1
-	while(num_row//10 > 0):
+	while(nrows//10 > 0):
 		x = x + 1 
-		num_row = num_row//10  
+		nrows = nrows//10  
 
 	y = 1 
-	while(num_col//10 > 0):
+	while(ncols//10 > 0):
 		y = y + 1
-		num_col = num_col//10 
+		ncols = ncols//10 
 
 	if x > y:
 		return x 
@@ -202,14 +215,14 @@ def compute_max_power(num_row, num_col):
 def compute_all_atom_types():
 	global spin_array
 
-	num_row, num_col = np.shape(spin_array) 
-	max_power = compute_max_power(num_row, num_col)
+	nrows, ncols = np.shape(spin_array) 
+	max_power = compute_max_power(nrows, ncols)
 
 	addr = spin_array.ctypes.data
 	spin_tuple = (addr, spin_array.shape, spin_array.dtype, max_power)
 	
-	for row in range(num_row):
-		for col in range(num_col):
+	for row in range(nrows):
+		for col in range(ncols):
 			
 			row_col = row_col_to_num(row, col, max_power)
 			#if (row,col) is specie1
@@ -265,30 +278,30 @@ def generate_neighbors(spin_tuple, row, col, spin_type, visited_list):
 	shape = spin_tuple[1]
 	dtype = spin_tuple[2]
 	spin_array = nb.carray(address_as_void_pointer(addr), shape, dtype=dtype)
-	num_row, num_col = shape
+	nrows, ncols = shape
 	max_power = spin_tuple[3]
 
 	#right neighbor
-	if spin_array[row][(col + 1)%num_col] == spin_type:
-		row_col = row_col_to_num(row, (col + 1)%num_col, max_power)
+	if spin_array[row][(col + 1)%ncols] == spin_type:
+		row_col = row_col_to_num(row, (col + 1)%ncols, max_power)
 		if visited_list.get(row_col, 0) == 0: #node has not been visited
 			nei_list.append(row_col)
 
 	#bottom neighor
-	if spin_array[(row + 1)%num_row][col] == spin_type:
-		row_col = row_col_to_num((row + 1)%num_row, col, max_power)
+	if spin_array[(row + 1)%nrows][col] == spin_type:
+		row_col = row_col_to_num((row + 1)%nrows, col, max_power)
 		if visited_list.get(row_col, 0) == 0: #node has not been visited
 			nei_list.append(row_col)
 
 	#left neighbor
-	if spin_array[row][(col - 1)%num_col] == spin_type:
-		row_col = row_col_to_num(row,(col - 1)%num_col, max_power)
+	if spin_array[row][(col - 1)%ncols] == spin_type:
+		row_col = row_col_to_num(row,(col - 1)%ncols, max_power)
 		if visited_list.get(row_col, 0) == 0: #node has not been visited 
 			nei_list.append(row_col)
 
 	#above neighbor 
-	if spin_array[(row - 1)%num_row][col] == spin_type:
-		row_col = row_col_to_num((row - 1)%num_row, col, max_power)
+	if spin_array[(row - 1)%nrows][col] == spin_type:
+		row_col = row_col_to_num((row - 1)%nrows, col, max_power)
 		if visited_list.get(row_col, 0) == 0: #node has not been visited
 			nei_list.append(row_col) 
 
@@ -320,7 +333,7 @@ def compute_prob_of_config(spin_tuple, prob_bb, prob_bi, prob_ii, num_bb, num_bi
 	shape = spin_tuple[1]
 	dtype = spin_tuple[2]
 	spin_array = nb.carray(address_as_void_pointer(addr), shape, dtype=dtype)
-	num_row, num_col = shape
+	nrows, ncols = shape
 	max_power = spin_tuple[3]
 
 	num_atom = len(changed_atoms_specie)
@@ -509,7 +522,7 @@ def Expand_Swap(spin_tuple, row_atom1, col_atom1, row_atom2, col_atom2, prob_bb,
 	shape = spin_tuple[1]
 	dtype = spin_tuple[2]
 	spin_array = nb.carray(address_as_void_pointer(addr), shape, dtype=dtype)
-	num_row, num_col = shape
+	nrows, ncols = shape
 	max_power = spin_tuple[3]
 
 	changed_atoms_specie = List()
@@ -626,12 +639,12 @@ def compute_reverse_prob(spin_tuple, prob_bb, prob_bi, prob_ii, num_bb, num_bi, 
 	prob_bb_expansion, prob_bi_expansion, prob_ii_expansion, \
 	changed_atoms_specie, row1, col1, row2, col2)
 
-	
+#I think there is a built-in version of this that is more efficient
 #copy arr1 into arr2
 def copy_arr(arr1 , arr2):
-	num_row, num_col = np.shape(arr1) 
-	for i in range(num_row):
-		for j in range(num_col):
+	nrows, ncols = np.shape(arr1) 
+	for i in range(nrows):
+		for j in range(ncols):
 			arr2[i][j] = arr1[i][j] 
 
 
@@ -656,31 +669,31 @@ def Energy_of_spin_nei(spin_tuple, row,col,J):
 	shape = spin_tuple[1]
 	dtype = spin_tuple[2]
 	spin_array = nb.carray(address_as_void_pointer(addr), shape, dtype=dtype)
-	num_row, num_col = shape
+	nrows, ncols = shape
 
 	spin_type = spin_array[row][col] 
 	E = 0.0
 	#neighbor above
 	if row == 0:
-		E = E - J*spin_array[num_row - 1][col]*spin_type	 
+		E = E - J*spin_array[nrows - 1][col]*spin_type	 
 	else:
 		E = E - J*spin_array[row - 1][col]*spin_type
 		
 	#neighbor below
-	if row == num_row - 1: 
+	if row == nrows - 1: 
 		E = E - J*spin_array[0][col]*spin_type	
 	else: 
 		E = E - J*spin_array[row + 1][col]*spin_type
 		
 	#neighbor right 
-	if col == num_col - 1: 
+	if col == ncols - 1: 
 		E = E - J*spin_array[row][0]*spin_type	
 	else: 
 		E = E - J*spin_array[row][col + 1]*spin_type
 		
 	#neighbor left 
 	if col == 0: 
-		E = E - J*spin_array[row][num_col - 1]*spin_type
+		E = E - J*spin_array[row][ncols - 1]*spin_type
 	else: 
 		E = E - J*spin_array[row][col - 1]*spin_type
 		
@@ -692,10 +705,10 @@ def Calculate_E(spin_tuple, J):
 	shape = spin_tuple[1]
 	dtype = spin_tuple[2]
 	spin_array = nb.carray(address_as_void_pointer(addr), shape, dtype=dtype)
-	num_row, num_col = shape
+	nrows, ncols = shape
 	E = 0.0 
-	for i in range(num_row): 
-		for j in range(num_col):
+	for i in range(nrows): 
+		for j in range(ncols):
 			E = E + Energy_of_spin_nei(spin_tuple, i,j,J)
 	#multiplied by 0.5 due to double counting
 	return 0.5*E 
@@ -792,13 +805,13 @@ class changes_in_atom:
 
 #returns list of neighbors
 @jit(nopython=True)
-def compute_neighbors(row, col, num_row, num_col): 
+def compute_neighbors(row, col, nrows, ncols): 
 	neighbors = []
 	#right neighbor 
-	nei_right = [row, (col + 1)%num_col]
-	nei_bottom = [(row + 1)%num_row , col]
-	nei_left = [row, (col - 1)%num_col]
-	nei_above = [ (row - 1)%num_row, col]
+	nei_right = [row, (col + 1)%ncols]
+	nei_bottom = [(row + 1)%nrows , col]
+	nei_left = [row, (col - 1)%ncols]
+	nei_above = [ (row - 1)%nrows, col]
 	neighbors.append(nei_right)
 	neighbors.append(nei_bottom)
 	neighbors.append(nei_left)
@@ -820,7 +833,7 @@ def compute_atom_redist(spin_tuple, row1, col1, row2, col2, prob_bb, prob_bi, pr
 	shape = spin_tuple[1]
 	dtype = spin_tuple[2]
 	spin_array = nb.carray(address_as_void_pointer(addr), shape, dtype=dtype)
-	num_row, num_col = shape
+	nrows, ncols = shape
 	max_power = spin_tuple[3]
 	
 	#changed_atoms_specie are the list of atoms that need to undergo
@@ -834,7 +847,7 @@ def compute_atom_redist(spin_tuple, row1, col1, row2, col2, prob_bb, prob_bi, pr
 		row, col = changed_atoms_specie[i]
 		row_col = row_col_to_num(row, col, max_power)
 		atoms_to_check[row_col] = 1 
-		neighbors = compute_neighbors(row, col, num_row, num_col)
+		neighbors = compute_neighbors(row, col, nrows, ncols)
 		for j in range(len(neighbors)):
 			row_nei, col_nei = neighbors[j]
 			row_col_nei = row_col_to_num(row_nei, col_nei, max_power)
@@ -1112,8 +1125,8 @@ def insert_atom(row_col, list_str):
 
 def accept_move(changes_in_atom_arr, changed_atoms_specie):
 	global spin_array
-	num_row, num_col = np.shape(spin_array) 
-	max_power = compute_max_power(num_row, num_col)
+	nrows, ncols = np.shape(spin_array) 
+	max_power = compute_max_power(nrows, ncols)
 
 	#Make the swaps
 	for i in range(len(changed_atoms_specie)):
@@ -1153,7 +1166,7 @@ def propose_move(E_old, J, kT, max_power):
 	global prob_ii_expansion
 
 	global spin_array
-	num_row, num_col = np.shape(spin_array) 
+	nrows, ncols = np.shape(spin_array) 
 
 	numb_specie1 = len(boundary_atoms_list_specie1)
 	numb_specie2 = len(boundary_atoms_list_specie2)
@@ -1320,41 +1333,119 @@ def propose_move(E_old, J, kT, max_power):
 
 	return proposed_move_state, E_new
 
+def get_nbrs(lattice, i0, j0):
+    nrows, ncols = lattice.shape
+    nbrs = []
+    for i in range(i0-1, i0+2):
+        for j in range(j0-1, j0+2):
+            if 0 <= i < nrows and 0 <= j < ncols:
+                nbrs.append((i, j))
+    return nbrs
 
+def change_cluster_id(ids, site, old_id, new_id):
+    nbrs = get_nbrs(ids, *site)
+    if ids[site] == old_id:
+        ids[site] = new_id
+        for nbr in nbrs:
+            if ids[nbr] == old_id:
+                change_cluster_id(ids, nbr, old_id, new_id)
 
+def update_cluster_ids(ids, sites, nclusters):
+    raise RuntimeError("Not yet implemented")
+    # iterate over sites
+    # if -1, then skip
+    # if 1, then ...
+    #   find neighbor clusters
+    #   if no neighbors, make a new one and increment nphases
+    #   if neighbor cluster id is unique, assign it
+    #   if multiple types of neighbors, join clusters
+    #       make a list of neighbors with unique cluster ids
+    #       update all other cluster ids to first cluster id
+    for (i, j) in sites:
+        nbrs = get_nbrs(ids, i, j)
+        unique_ids = []     # gather unique cluster ids
+        unique_sites = []   # corresponding sites
+        for nbr in nbrs:
+            nbr_id = ids[nbr]
+            if nbr_id != -1 and not (nbr_id in unique_ids):
+                unique_ids.append(nbr_id)
+                unique_sites.append(nbr)
+        if len(unique_ids) == 0:
+            nclusters += 1
+            ids[i, j] = nclusters
+        elif len(unique_ids) == 1:
+            ids[i, j] = ids[unique_ids[0]]
+        else:
+            # join multiple clusters
+            idd = unique_ids.pop()
+            site = unique_sites.pop()
+            ids[i, j] = idd
+            for (nbr, nbr_id) in zip(unique_sites, unique_ids):
+                change_cluster_id(ids, nbr, nbr_id, idd)
 
+@jit(nopython=False)
+def compute_cluster_ids():
+    global spin_array
+    nclusters = 2
+    ids = np.copy(spin_array)
+    for i in range(spin_array.shape[0]):
+        for j in range(spin_array.shape[1]):
+            if ids[i, j] == 1:
+                change_cluster_id(ids, (i, j), 1, nclusters)
+                nclusters += 1
+    return (ids, nclusters)
 
 # Temperature or kb*T can be given relative to J 
-def Equilibrate_T(kT, num_row, num_col, n_iter, J):
+def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir=None):
 	global spin_array
 	#calculate energy 
-	max_power = compute_max_power(num_row, num_col)
+	max_power = compute_max_power(nrows, ncols)
 
 	addr = spin_array.ctypes.data
 	spin_tuple = (addr, spin_array.shape, spin_array.dtype, max_power)
 
 	E_total = Calculate_E(spin_tuple, J) 
 	#array of energy
-	E_arr = []
-	num_accepted_move = 0
+	nacc = 0
+
+    clfile = open(..., 'w') if clstat_freq != None else None
+    if clstat_freq == None:
+        clstat_freq = niters+1      # don't compute cluster statistics
+    if outfreq == None:
+        outfreq = niters+1          # don't output
 
 	#number of accepted moves where the energy changes
-	num_accepted_move_nonzero_energy = 0
+	nacc_nonzero_energy = 0
+    Esum = 0
+    E2sum = 0
+    clmax = 0
+    clmin = 0
+    clavg = 0
+    ncl = 0
 
-	for k in range(n_iter):
+	for k in range(niters):
 		proposed_move_state, E_new = propose_move(E_total, J, kT, max_power)
 		if proposed_move_state == True:
 			if (E_total - E_new) != 0.0:
-				num_accepted_move_nonzero_energy = num_accepted_move_nonzero_energy + 1
+				nacc_nonzero_energy = nacc_nonzero_energy + 1
 			E_total = E_new
-			num_accepted_move = num_accepted_move + 1
-		E_arr.append(E_total)
+			nacc = nacc + 1
+        Esum += E_total
+        E2sum += E_total*E_total
+        if k % clstat_freq == 0:
+            (ids, nclusters) = compute_cluster_ids()
+            ncl += (nclusters - 1)
+            clsizes = [np.sum(ids == i) for i in range(2, nclusters+1)]
+            clmax += max(clsizes)
+            clmin += min(clsizes)
+            clavg += sum(clsizes) / len(clsizes)
+            ids.tofile(os.path.join(..., 'cluster-ids_iter-{}.csv'.format(k)), sep=',')
+            spin_array.tofile(os.path.join(..., 'spins_iter-{}.csv'.format(k)), sep=',')
 		
-	return E_arr, E_total, num_accepted_move/n_iter, num_accepted_move_nonzero_energy/n_iter
-		
+	return ...
 		
 
-def main():
+def main(kT=1.0, J=1.0, niters=1000000, burnin=10000, nrows=40, ncols=40, vf=0.5, outdir="temp"):
 	global spin_array
 
 	global boundary_atoms_list_specie1
@@ -1375,118 +1466,99 @@ def main():
 	global prob_bi_expansion
 	global prob_ii_expansion
 
+    prob_bb_bases = [0.33333333333333, 0.5544459681235077, 0.8642656663978563, 0.9930308986391225]
+    prob_bi_bases = [0.33333333333333, 0.3114567270716232, 0.13378197271944042, 0.012893167460595545]
+    prob_ii_bases = [0.33333333333333, 0.13409730409587728, 0.0019528246093657442, 0.0036061951403780212 ]
+    bJs = [0.0, 0.1, 0.4406878, 1.5]
 
+    bJ = J / kT
 
-	num_row = 40
-	num_col = 40
+    if bJ <= bJs[1]:
+		prob_bb_base = bJ*(prob_bb_bases[1]-prob_bb_bases[0])/(bJs[1]-bJs[0]) + prob_bb_bases[0]
+		prob_bi_base = bJ*(prob_bi_bases[1]-prob_bi_bases[0])/(bJs[1]-bJs[0]) + prob_bi_bases[0]
+		prob_ii_base = bJ*(prob_ii_bases[1]-prob_ii_bases[0])/(bJs[1]-bJs[0]) + prob_ii_bases[0]
+    elif bJ <= bJs[2]:
+		prob_bb_base = (bJ-bJ[1])*(prob_bb_bases[2]-prob_bb_bases[1])/(bJs[2]-bJs[1]) + prob_bb_bases[1]
+		prob_bi_base = (bJ-bJ[1])*(prob_bi_bases[2]-prob_bi_bases[1])/(bJs[2]-bJs[1]) + prob_bi_bases[1]
+		prob_ii_base = (bJ-bJ[1])*(prob_ii_bases[2]-prob_ii_bases[1])/(bJs[2]-bJs[1]) + prob_ii_bases[1]
+    elif bJ <= bJs[3]:
+		prob_bb_base = (bJ-bJ[2])*(prob_bb_bases[3]-prob_bb_bases[2])/(bJs[3]-bJs[2]) + prob_bb_bases[2]
+		prob_bi_base = (bJ-bJ[2])*(prob_bi_bases[3]-prob_bi_bases[2])/(bJs[3]-bJs[2]) + prob_bi_bases[2]
+		prob_ii_base = (bJ-bJ[2])*(prob_ii_bases[3]-prob_ii_bases[2])/(bJs[3]-bJs[2]) + prob_ii_bases[2]
+    else:
+		prob_bb_base = prob_bb_bases[-1]
+		prob_bi_base = prob_bi_bases[-1]
+		prob_ii_base = prob_ii_bases[-1]
 	
 
-	bJ_arr = [float(sys.argv[1])]
+	initalize_spin_lattice(nrows, ncols, vf)
 
-	if bJ_arr[0] == 0.4406878:
+    prob_bb_expansions = [0.2573616453849372, 0.5, 0.13086994972714883]
+    prob_bi_expansions = [0.2985619550399164, 0.5, 0.33836990735622247]
+    prob_ii_expansions = [0.2933017814025113, 0.5, 0.010051681873343987]
+
+    if bJ <= bJs[1]:
+
+        prob_bb_expansion = prob_bb_expansions[0]
+        prob_bi_expansion = prob_bi_expansions[0]
+        prob_ii_expansion = prob_ii_expansions[0]
+
+    elif bJ <= bJs[2]:
 		
-		prob_bb_base = 0.8642656663978563
-		prob_bi_base = 0.13378197271944042
-		prob_ii_base = 0.0019528246093657442
+        prob_bb_expansion = (bJ-bJs[1])*(prob_bb_expansions[1]-prob_bb_expansions[0])/(bJs[2]-bJs[1]) + prob_bb_expansions[0]
+		prob_bi_expansion = (bJ-bJs[1])*(prob_bi_expansions[1]-prob_bi_expansions[0])/(bJs[2]-bJs[1]) + prob_bi_expansions[0]
+		prob_ii_expansion = (bJ-bJs[1])*(prob_ii_expansions[1]-prob_ii_expansions[0])/(bJs[2]-bJs[1]) + prob_ii_expansions[0]
 
-	elif bJ_arr[0] == 0.1:
+    elif bJ <= bJs[3]:
 
-		prob_bb_base = 0.5544459681235077
-		prob_bi_base = 0.3114567270716232
-		prob_ii_base = 0.13409730409587728
+        prob_bb_expansion = (bJ-bJs[2])*(prob_bb_expansions[2]-prob_bb_expansions[1])/(bJs[3]-bJs[2]) + prob_bb_expansions[1]
+		prob_bi_expansion = (bJ-bJs[2])*(prob_bi_expansions[2]-prob_bi_expansions[1])/(bJs[3]-bJs[2]) + prob_bi_expansions[1]
+		prob_ii_expansion = (bJ-bJs[2])*(prob_ii_expansions[2]-prob_ii_expansions[1])/(bJs[3]-bJs[2]) + prob_ii_expansions[1]
 
-	elif bJ_arr[0] == 1.5:
+    else:
+        prob_bb_expansion = prob_bb_expansions[-1]
+		prob_bi_expansion = prob_bi_expansions[-1]
+		prob_ii_expansion = prob_ii_expansions[-1]
 
-		prob_bb_base = 0.9930308986391225
-		prob_bi_base = 0.012893167460595545
-		prob_ii_base = 0.0036061951403780212 
+    #initialize boundary/interior atoms list and dicts
+    compute_all_atom_types()
 
-	else:
-		print("ERROR: BJ DOES NOT HAVE EXPECTED VALUES!!")
-		return 1
+    burnin_results = simulate(kT, nrows, ncols, burnin, J)
+    sim_results = simulate(kT, nrows, ncols, niters, J, outdir=outdir)
 
+    '''
+    iter_arr = np.linspace(1,len(E_arr),len(E_arr))
+
+    E_arr_v_iter = np.array([np.array(iter_arr) , np.array(E_arr)])
+    E_arr_v_iter = E_arr_v_iter.T.tolist()
+
+    
+    fields = ["iter_num", "E"]
+    csvfilename = "E_arr_bJ_" + str(bJ) + ".csv"
+
+    with open(csvfilename, 'w') as csvfile: 
+        #creating a csv writer object 
+        csvwriter = csv.writer(csvfile)
+        #writing the fields 
+        csvwriter.writerow(fields)
+        csvwriter.writerows(E_arr_v_iter)
+
+    np.save("spin_array_bJ_" + str(bJ), spin_array)
+    ''' 
+    
+    boundary_atoms_dict_specie1 = {}
+    boundary_atoms_list_specie1 = []
+
+    interior_atoms_dict_specie1 = {}
+    interior_atoms_list_specie1 = []
+
+    boundary_atoms_dict_specie2 = {}
+    boundary_atoms_list_specie2 = []
+
+    interior_atoms_dict_specie2 = {}
+    interior_atoms_list_specie2 = []
+
+
+    copy_arr(spin_array_initial, spin_array)
 	
-	n_iter = 2000000
-
-
-	spin_array_initial = np.zeros((num_row, num_col))
-
-	spin_array = np.load("spin_array_initial.npy")
-
-	for i in range(num_row):
-		for j in range(num_col):
-			spin_array_initial[i][j] = spin_array[i][j]
-
-
-	for bJ in bJ_arr:
-	
-		J = 20.0
-		kT = float(J)/bJ
-
-		for trial in range(1):
-
-			if bJ_arr[0] == 0.4406878:
-		
-				prob_bb_expansion = 0.5
-				prob_bi_expansion = 0.5
-				prob_ii_expansion = 0.5
-
-			elif bJ_arr[0] == 0.1:
-
-				prob_bb_expansion = 0.2573616453849372
-				prob_bi_expansion = 0.2985619550399164
-				prob_ii_expansion = 0.2933017814025113
-
-			elif bJ_arr[0] == 1.5:
-
-				prob_bb_expansion = 0.13086994972714883
-				prob_bi_expansion = 0.33836990735622247
-				prob_ii_expansion = 0.010051681873343987 
-
-			else:
-				print("ERROR: BJ DOES NOT HAVE EXPECTED EXPANSION VALUES!!")
-				return 1
-
-
-			#initialize boundary/interior atoms list and dicts
-			compute_all_atom_types()
-
-			E_arr, E_total, accept_rate, accept_rate_nonzero_energy\
-			 = Equilibrate_T(kT, num_row, num_col, n_iter, J)
-		
-			iter_arr = np.linspace(1,len(E_arr),len(E_arr))
-
-			E_arr_v_iter = np.array([np.array(iter_arr) , np.array(E_arr)])
-			E_arr_v_iter = E_arr_v_iter.T.tolist()
-
-			
-			fields = ["iter_num", "E"]
-			csvfilename = "E_arr_bJ_" + str(bJ) + ".csv"
-
-			with open(csvfilename, 'w') as csvfile: 
-				#creating a csv writer object 
-				csvwriter = csv.writer(csvfile)
-				#writing the fields 
-				csvwriter.writerow(fields)
-				csvwriter.writerows(E_arr_v_iter)
-
-			np.save("spin_array_bJ_" + str(bJ), spin_array)
-			
-			
-			boundary_atoms_dict_specie1 = {}
-			boundary_atoms_list_specie1 = []
-
-			interior_atoms_dict_specie1 = {}
-			interior_atoms_list_specie1 = []
-
-			boundary_atoms_dict_specie2 = {}
-			boundary_atoms_list_specie2 = []
-
-			interior_atoms_dict_specie2 = {}
-			interior_atoms_list_specie2 = []
-
-
-			copy_arr(spin_array_initial , spin_array)
-	
-	
-main()
+main(**args)
