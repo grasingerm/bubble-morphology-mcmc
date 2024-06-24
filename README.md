@@ -2,7 +2,7 @@
 
 ## Getting started
 This research code is written in the Python and depends on numba (last tested with version '0.53.1').
-The main file for the mean-field theory simulations is ``liquid_mcmc.jl``.
+The main file for Ising simulations with conserved number of up/down spins is ``liquid_mcmc.jl``.
 You can see options by running:
 
     python liquid_mcmc.py --help
