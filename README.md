@@ -10,7 +10,7 @@ You can see options by running:
 The theoretical details of this code can be found in the reference below.
 
 ## Citations
-If you found this code useful for your research, you can cite it using the below bibtex entry:
+If you found this code useful for your research, you can cite it using https://doi.org/10.1016/j.commatsci.2022.111886 or the below bibtex entry:
 
     @article{fall2023optimized,
 	  title={An optimized species-conserving Monte Carlo method with potential applicability to high entropy alloys},
