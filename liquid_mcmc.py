@@ -13,20 +13,26 @@ import ctypes
 import time
 
 import argparse
+import os
+from pathlib import Path
 
 parser = argparse.ArgumentParser(description='MCMC simulation of liquid droplet morphologies')
-#parser.add_argument('integers', metavar='N', type=int, nargs='+',
-#                    help='an integer for the accumulator')
-parser.add_argument('--kT', type=float, default=1.0, help='temperature')
+parser.add_argument('--kT', type=float, default=10.0, help='temperature')
 parser.add_argument('--J', type=float, default=1.0, help='coupling constant')
 parser.add_argument('--vf', type=float, default=0.5, help='volume fraction')
-parser.add_argument('--niters', type=int, default=1000000, help='number of iterations')
-parser.add_argument('--burnin', type=int, default=10000, help='number of burn-in iterations')
 parser.add_argument('--nrows', type=int, default=40, help='number of rows')
 parser.add_argument('--ncols', type=int, default=40, help='number of cols')
-parser.add_argument('--outdir', type=int, default="temp", help='number of burn-in iterations')
+parser.add_argument('--niters', type=int, default=1000000, help='number of iterations')
+parser.add_argument('--burnin', type=int, default=200000, help='number of burn-in iterations')
+parser.add_argument('--burnin_schedule', type=str, default='[1000, 100, 10, 2, 1]', help='burn-in schedule multipler for kT')
+parser.add_argument('--clstat_freq', type=int, default=500, help='number of iterations per cluster computations')
+parser.add_argument('--outfreq', type=int, default=10000, help='number of iterations per diagnostic information')
+parser.add_argument('--outdir', type=str, default="temp", help='output directory')
+parser.add_argument('--do_plots', default=False, action="store_true", help='create plots of microstates and clusters')
 
-args = parser.parse_args()
+namespace_args = parser.parse_args()
+args = vars(namespace_args)
+args["burnin_schedule"] = eval(args["burnin_schedule"])
 
 prob_bb_base = 0.0
 prob_bi_base = 0.0
@@ -57,12 +63,9 @@ spin_array = 0
 spin_array_initial = 0
 cid_array = 0
 
-global rg = np.random.default_rng(int(time.time()))
-
 def initialize_spin_lattice(nrows, ncols, vf=0.5):
-	global spin_array
-    global rg
-	spin_array_flat = -1*np.ones(nrows*ncols, int)
+    global spin_array
+    spin_array_flat = -1*np.ones(nrows*ncols, int)
     nsite = spin_array_flat.size
     nplace = int(nsite*vf)
     for i in range(nplace):
@@ -1333,6 +1336,7 @@ def propose_move(E_old, J, kT, max_power):
 
 	return proposed_move_state, E_new
 
+@jit(nopython=False)
 def get_nbrs(lattice, i0, j0):
     nrows, ncols = lattice.shape
     nbrs = []
@@ -1342,6 +1346,7 @@ def get_nbrs(lattice, i0, j0):
                 nbrs.append((i, j))
     return nbrs
 
+@jit(nopython=False)
 def change_cluster_id(ids, site, old_id, new_id):
     nbrs = get_nbrs(ids, *site)
     if ids[site] == old_id:
@@ -1384,8 +1389,7 @@ def update_cluster_ids(ids, sites, nclusters):
                 change_cluster_id(ids, nbr, nbr_id, idd)
 
 @jit(nopython=False)
-def compute_cluster_ids():
-    global spin_array
+def compute_cluster_ids(spin_array):
     nclusters = 2
     ids = np.copy(spin_array)
     for i in range(spin_array.shape[0]):
@@ -1393,29 +1397,29 @@ def compute_cluster_ids():
             if ids[i, j] == 1:
                 change_cluster_id(ids, (i, j), 1, nclusters)
                 nclusters += 1
-    return (ids, nclusters)
+    return (ids, nclusters-1)
 
 # Temperature or kb*T can be given relative to J 
-def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir=None):
-	global spin_array
-	#calculate energy 
-	max_power = compute_max_power(nrows, ncols)
+def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir=None, do_plots=False):
+    global spin_array
+    max_power = compute_max_power(nrows, ncols)
+    addr = spin_array.ctypes.data
+    spin_tuple = (addr, spin_array.shape, spin_array.dtype, max_power)
 
-	addr = spin_array.ctypes.data
-	spin_tuple = (addr, spin_array.shape, spin_array.dtype, max_power)
+    E_total = Calculate_E(spin_tuple, J)
+    nacc = 0
 
-	E_total = Calculate_E(spin_tuple, J) 
-	#array of energy
-	nacc = 0
-
-    clfile = open(..., 'w') if clstat_freq != None else None
+    rollfile = open(os.path.join(outdir, "rolling.csv"), 'w') if clstat_freq != None else None
+    rollwriter = csv.writer(rollfile) if rollfile != None else None
+    if rollwriter != None:
+        rollwriter.writerow(["iter", "E", "E2", "ncl", "clmax", "clmin", "clavg", "AR"])
     if clstat_freq == None:
         clstat_freq = niters+1      # don't compute cluster statistics
     if outfreq == None:
         outfreq = niters+1          # don't output
 
 	#number of accepted moves where the energy changes
-	nacc_nonzero_energy = 0
+    nacc_nonzero_energy = 0
     Esum = 0
     E2sum = 0
     clmax = 0
@@ -1423,48 +1427,68 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
     clavg = 0
     ncl = 0
 
-	for k in range(niters):
-		proposed_move_state, E_new = propose_move(E_total, J, kT, max_power)
-		if proposed_move_state == True:
-			if (E_total - E_new) != 0.0:
-				nacc_nonzero_energy = nacc_nonzero_energy + 1
-			E_total = E_new
-			nacc = nacc + 1
+    for k in range(1, niters+1):
+        proposed_move_state, E_new = propose_move(E_total, J, kT, max_power)
+        if proposed_move_state == True:
+            if (E_total - E_new) != 0.0:
+                nacc_nonzero_energy = nacc_nonzero_energy + 1
+            E_total = E_new
+            nacc = nacc + 1
         Esum += E_total
         E2sum += E_total*E_total
         if k % clstat_freq == 0:
-            (ids, nclusters) = compute_cluster_ids()
+            (ids, nclusters) = compute_cluster_ids(spin_array)
             ncl += (nclusters - 1)
             clsizes = [np.sum(ids == i) for i in range(2, nclusters+1)]
             clmax += max(clsizes)
             clmin += min(clsizes)
             clavg += sum(clsizes) / len(clsizes)
-            ids.tofile(os.path.join(..., 'cluster-ids_iter-{}.csv'.format(k)), sep=',')
-            spin_array.tofile(os.path.join(..., 'spins_iter-{}.csv'.format(k)), sep=',')
+            np.savetxt(os.path.join(outdir, 'cluster-ids_iter-{:09d}.csv'.format(k)), ids, fmt="%d", delimiter=',')
+            np.savetxt(os.path.join(outdir, 'spins_iter-{:09d}.csv'.format(k)), spin_array, fmt="%d", delimiter=',')
+            if do_plots:
+                plt.imshow(ids)
+                plt.savefig(os.path.join(outdir, 'cluster-ids_iter-{:09d}.png'.format(k)))
+                plt.clf()
+                plt.imshow(spin_array)
+                plt.savefig(os.path.join(outdir, 'spins_iter-{:09d}.png'.format(k)))
+                plt.clf()
+            rollwriter.writerow([k, Esum / k, E2sum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clmin / k * clstat_freq, clavg / k * clstat_freq, nacc / k]) 
+        if k % outfreq == 0:
+            print('iter = {}, % = {:.2f}, AR = {}, E_roll = {}, E2_roll = {}, ncls_roll = {}, clmax_roll = {}, clmin_roll = {}, clavg_roll = {}'.format(k, k / niters, nacc / k, Esum / k, E2sum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clmin / k * clstat_freq, clavg / k * clstat_freq))
+
+    if rollfile != None:
+        rollfile.close()
 		
-	return ...
-		
+    return {
+            "E": Esum / niters, "E2" : E2sum / niters, 
+            "ncl" : ncl / niters * clstat_freq,
+            "clmax" : clmax / niters * clstat_freq,
+            "clmin" : clmin / niters * clstat_freq,
+            "clavg" : clavg / niters * clstat_freq,
+            "AR" : nacc / niters,
+            "ARn0" : nacc_nonzero_energy / niters
+            }
 
-def main(kT=1.0, J=1.0, niters=1000000, burnin=10000, nrows=40, ncols=40, vf=0.5, outdir="temp"):
-	global spin_array
+def main(kT=1.0, J=1.0, niters=1000000, burnin=200000, burnin_schedule=[1000,100,10,2,1], nrows=40, ncols=40, vf=0.5, clstat_freq=500, outfreq=1000, outdir="temp", do_plots=False):
+    global spin_array
 
-	global boundary_atoms_list_specie1
-	global interior_atoms_list_specie1
-	global boundary_atoms_list_specie2
-	global interior_atoms_list_specie2
+    global boundary_atoms_list_specie1
+    global interior_atoms_list_specie1
+    global boundary_atoms_list_specie2
+    global interior_atoms_list_specie2
 
-	global boundary_atoms_dict_specie1
-	global interior_atoms_dict_specie1
-	global boundary_atoms_dict_specie2
-	global interior_atoms_dict_specie2
+    global boundary_atoms_dict_specie1
+    global interior_atoms_dict_specie1
+    global boundary_atoms_dict_specie2
+    global interior_atoms_dict_specie2
 
-	global prob_bb_base
-	global prob_bi_base
-	global prob_ii_base
+    global prob_bb_base
+    global prob_bi_base
+    global prob_ii_base
 
-	global prob_bb_expansion
-	global prob_bi_expansion
-	global prob_ii_expansion
+    global prob_bb_expansion
+    global prob_bi_expansion
+    global prob_ii_expansion
 
     prob_bb_bases = [0.33333333333333, 0.5544459681235077, 0.8642656663978563, 0.9930308986391225]
     prob_bi_bases = [0.33333333333333, 0.3114567270716232, 0.13378197271944042, 0.012893167460595545]
@@ -1474,24 +1498,23 @@ def main(kT=1.0, J=1.0, niters=1000000, burnin=10000, nrows=40, ncols=40, vf=0.5
     bJ = J / kT
 
     if bJ <= bJs[1]:
-		prob_bb_base = bJ*(prob_bb_bases[1]-prob_bb_bases[0])/(bJs[1]-bJs[0]) + prob_bb_bases[0]
-		prob_bi_base = bJ*(prob_bi_bases[1]-prob_bi_bases[0])/(bJs[1]-bJs[0]) + prob_bi_bases[0]
-		prob_ii_base = bJ*(prob_ii_bases[1]-prob_ii_bases[0])/(bJs[1]-bJs[0]) + prob_ii_bases[0]
+        prob_bb_base = bJ*(prob_bb_bases[1]-prob_bb_bases[0])/(bJs[1]-bJs[0]) + prob_bb_bases[0]
+        prob_bi_base = bJ*(prob_bi_bases[1]-prob_bi_bases[0])/(bJs[1]-bJs[0]) + prob_bi_bases[0]
+        prob_ii_base = bJ*(prob_ii_bases[1]-prob_ii_bases[0])/(bJs[1]-bJs[0]) + prob_ii_bases[0]
     elif bJ <= bJs[2]:
-		prob_bb_base = (bJ-bJ[1])*(prob_bb_bases[2]-prob_bb_bases[1])/(bJs[2]-bJs[1]) + prob_bb_bases[1]
-		prob_bi_base = (bJ-bJ[1])*(prob_bi_bases[2]-prob_bi_bases[1])/(bJs[2]-bJs[1]) + prob_bi_bases[1]
-		prob_ii_base = (bJ-bJ[1])*(prob_ii_bases[2]-prob_ii_bases[1])/(bJs[2]-bJs[1]) + prob_ii_bases[1]
+        prob_bb_base = (bJ-bJs[1])*(prob_bb_bases[2]-prob_bb_bases[1])/(bJs[2]-bJs[1]) + prob_bb_bases[1]
+        prob_bi_base = (bJ-bJs[1])*(prob_bi_bases[2]-prob_bi_bases[1])/(bJs[2]-bJs[1]) + prob_bi_bases[1]
+        prob_ii_base = (bJ-bJs[1])*(prob_ii_bases[2]-prob_ii_bases[1])/(bJs[2]-bJs[1]) + prob_ii_bases[1]
     elif bJ <= bJs[3]:
-		prob_bb_base = (bJ-bJ[2])*(prob_bb_bases[3]-prob_bb_bases[2])/(bJs[3]-bJs[2]) + prob_bb_bases[2]
-		prob_bi_base = (bJ-bJ[2])*(prob_bi_bases[3]-prob_bi_bases[2])/(bJs[3]-bJs[2]) + prob_bi_bases[2]
-		prob_ii_base = (bJ-bJ[2])*(prob_ii_bases[3]-prob_ii_bases[2])/(bJs[3]-bJs[2]) + prob_ii_bases[2]
+        prob_bb_base = (bJ-bJs[2])*(prob_bb_bases[3]-prob_bb_bases[2])/(bJs[3]-bJs[2]) + prob_bb_bases[2]
+        prob_bi_base = (bJ-bJs[2])*(prob_bi_bases[3]-prob_bi_bases[2])/(bJs[3]-bJs[2]) + prob_bi_bases[2]
+        prob_ii_base = (bJ-bJs[2])*(prob_ii_bases[3]-prob_ii_bases[2])/(bJs[3]-bJs[2]) + prob_ii_bases[2]
     else:
-		prob_bb_base = prob_bb_bases[-1]
-		prob_bi_base = prob_bi_bases[-1]
-		prob_ii_base = prob_ii_bases[-1]
-	
+        prob_bb_base = prob_bb_bases[-1]
+        prob_bi_base = prob_bi_bases[-1]
+        prob_ii_base = prob_ii_bases[-1]
 
-	initalize_spin_lattice(nrows, ncols, vf)
+    initialize_spin_lattice(nrows, ncols, vf)
 
     prob_bb_expansions = [0.2573616453849372, 0.5, 0.13086994972714883]
     prob_bi_expansions = [0.2985619550399164, 0.5, 0.33836990735622247]
@@ -1504,47 +1527,33 @@ def main(kT=1.0, J=1.0, niters=1000000, burnin=10000, nrows=40, ncols=40, vf=0.5
         prob_ii_expansion = prob_ii_expansions[0]
 
     elif bJ <= bJs[2]:
-		
+
         prob_bb_expansion = (bJ-bJs[1])*(prob_bb_expansions[1]-prob_bb_expansions[0])/(bJs[2]-bJs[1]) + prob_bb_expansions[0]
-		prob_bi_expansion = (bJ-bJs[1])*(prob_bi_expansions[1]-prob_bi_expansions[0])/(bJs[2]-bJs[1]) + prob_bi_expansions[0]
-		prob_ii_expansion = (bJ-bJs[1])*(prob_ii_expansions[1]-prob_ii_expansions[0])/(bJs[2]-bJs[1]) + prob_ii_expansions[0]
+        prob_bi_expansion = (bJ-bJs[1])*(prob_bi_expansions[1]-prob_bi_expansions[0])/(bJs[2]-bJs[1]) + prob_bi_expansions[0]
+        prob_ii_expansion = (bJ-bJs[1])*(prob_ii_expansions[1]-prob_ii_expansions[0])/(bJs[2]-bJs[1]) + prob_ii_expansions[0]
 
     elif bJ <= bJs[3]:
 
         prob_bb_expansion = (bJ-bJs[2])*(prob_bb_expansions[2]-prob_bb_expansions[1])/(bJs[3]-bJs[2]) + prob_bb_expansions[1]
-		prob_bi_expansion = (bJ-bJs[2])*(prob_bi_expansions[2]-prob_bi_expansions[1])/(bJs[3]-bJs[2]) + prob_bi_expansions[1]
-		prob_ii_expansion = (bJ-bJs[2])*(prob_ii_expansions[2]-prob_ii_expansions[1])/(bJs[3]-bJs[2]) + prob_ii_expansions[1]
+        prob_bi_expansion = (bJ-bJs[2])*(prob_bi_expansions[2]-prob_bi_expansions[1])/(bJs[3]-bJs[2]) + prob_bi_expansions[1]
+        prob_ii_expansion = (bJ-bJs[2])*(prob_ii_expansions[2]-prob_ii_expansions[1])/(bJs[3]-bJs[2]) + prob_ii_expansions[1]
 
     else:
         prob_bb_expansion = prob_bb_expansions[-1]
-		prob_bi_expansion = prob_bi_expansions[-1]
-		prob_ii_expansion = prob_ii_expansions[-1]
+        prob_bi_expansion = prob_bi_expansions[-1]
+        prob_ii_expansion = prob_ii_expansions[-1]
 
     #initialize boundary/interior atoms list and dicts
     compute_all_atom_types()
 
-    burnin_results = simulate(kT, nrows, ncols, burnin, J)
-    sim_results = simulate(kT, nrows, ncols, niters, J, outdir=outdir)
+    Path(outdir).mkdir(parents=True, exist_ok=True)
+    for kTmult in burnin_schedule:
+        print("Burn in for {} steps at {} kT ...".format(burnin, kT*kTmult))
+        burnin_results = simulate(kT*kTmult, nrows, ncols, burnin, J, clstat_freq=None, outfreq=None)
+        print("Burn in complete!")
 
-    '''
-    iter_arr = np.linspace(1,len(E_arr),len(E_arr))
-
-    E_arr_v_iter = np.array([np.array(iter_arr) , np.array(E_arr)])
-    E_arr_v_iter = E_arr_v_iter.T.tolist()
-
-    
-    fields = ["iter_num", "E"]
-    csvfilename = "E_arr_bJ_" + str(bJ) + ".csv"
-
-    with open(csvfilename, 'w') as csvfile: 
-        #creating a csv writer object 
-        csvwriter = csv.writer(csvfile)
-        #writing the fields 
-        csvwriter.writerow(fields)
-        csvwriter.writerows(E_arr_v_iter)
-
-    np.save("spin_array_bJ_" + str(bJ), spin_array)
-    ''' 
+    sim_results = simulate(kT, nrows, ncols, niters, J, clstat_freq=clstat_freq, outfreq=outfreq, outdir=outdir, do_plots=do_plots)
+    np.save(os.path.join(outdir, "results.npy"), sim_results)
     
     boundary_atoms_dict_specie1 = {}
     boundary_atoms_list_specie1 = []
@@ -1557,8 +1566,5 @@ def main(kT=1.0, J=1.0, niters=1000000, burnin=10000, nrows=40, ncols=40, vf=0.5
 
     interior_atoms_dict_specie2 = {}
     interior_atoms_list_specie2 = []
-
-
-    copy_arr(spin_array_initial, spin_array)
 	
 main(**args)
