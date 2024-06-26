@@ -11,6 +11,7 @@ from numba.typed import List
 import numba as nb
 import ctypes
 import time
+import json
 
 import argparse
 import os
@@ -1454,7 +1455,7 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
                 plt.clf()
             rollwriter.writerow([k, Esum / k, E2sum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clmin / k * clstat_freq, clavg / k * clstat_freq, nacc / k]) 
         if k % outfreq == 0:
-            print('iter = {}, % = {:.2f}, AR = {}, E_roll = {}, E2_roll = {}, ncls_roll = {}, clmax_roll = {}, clmin_roll = {}, clavg_roll = {}'.format(k, k / niters, nacc / k, Esum / k, E2sum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clmin / k * clstat_freq, clavg / k * clstat_freq))
+            print('iter = {}, % = {:.2f}, AR = {}, E_roll = {}, ncls_roll = {}, clmax_roll = {}, clavg_roll = {}'.format(k, k / niters, nacc / k, Esum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clavg / k * clstat_freq))
 
     if rollfile != None:
         rollfile.close()
@@ -1553,7 +1554,14 @@ def main(kT=1.0, J=1.0, niters=1000000, burnin=200000, burnin_schedule=[1000,100
         print("Burn in complete!")
 
     sim_results = simulate(kT, nrows, ncols, niters, J, clstat_freq=clstat_freq, outfreq=outfreq, outdir=outdir, do_plots=do_plots)
+    print()
+    print('Thermodynamic averages')
+    print('----------------------')
+    for (k, v) in sim_results.items():
+        print('    <{}> = {}'.format(k, v))
     np.save(os.path.join(outdir, "results.npy"), sim_results)
+    with open(os.path.join(outdir, "results.json"), 'w') as file:
+        file.write(json.dumps(sim_results))
     
     boundary_atoms_dict_specie1 = {}
     boundary_atoms_list_specie1 = []
