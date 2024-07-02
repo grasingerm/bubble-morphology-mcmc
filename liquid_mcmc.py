@@ -12,6 +12,7 @@ import numba as nb
 import ctypes
 import time
 import json
+import multiprocessing
 
 import argparse
 import os
@@ -30,6 +31,8 @@ parser.add_argument('--clstat_freq', type=int, default=500, help='number of iter
 parser.add_argument('--outfreq', type=int, default=10000, help='number of iterations per diagnostic information')
 parser.add_argument('--outdir', type=str, default="temp", help='output directory')
 parser.add_argument('--do_plots', default=False, action="store_true", help='create plots of microstates and clusters')
+parser.add_argument('--np', type=int, default=1, help='number of processes to spawn')
+parser.add_argument('--nr', type=int, default=1, help='number of parallel simulations to run')
 
 namespace_args = parser.parse_args()
 args = vars(namespace_args)
