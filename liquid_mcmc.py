@@ -31,8 +31,7 @@ parser.add_argument('--clstat_freq', type=int, default=500, help='number of iter
 parser.add_argument('--outfreq', type=int, default=10000, help='number of iterations per diagnostic information')
 parser.add_argument('--outdir', type=str, default="temp", help='output directory')
 parser.add_argument('--do_plots', default=False, action="store_true", help='create plots of microstates and clusters')
-parser.add_argument('--np', type=int, default=1, help='number of processes to spawn')
-parser.add_argument('--nr', type=int, default=1, help='number of parallel simulations to run')
+parser.add_argument('--replica_id', default=1, type=int, help='replica ID (appended to filenames)')
 
 namespace_args = parser.parse_args()
 args = vars(namespace_args)
@@ -1404,7 +1403,7 @@ def compute_cluster_ids(spin_array):
     return (ids, nclusters-1)
 
 # Temperature or kb*T can be given relative to J 
-def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir=None, do_plots=False):
+def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir=None, do_plots=False, replica_id=1):
     global spin_array
     max_power = compute_max_power(nrows, ncols)
     addr = spin_array.ctypes.data
@@ -1413,7 +1412,7 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
     E_total = Calculate_E(spin_tuple, J)
     nacc = 0
 
-    rollfile = open(os.path.join(outdir, "rolling.csv"), 'w') if clstat_freq != None else None
+    rollfile = open(os.path.join(outdir, "rolling_rid-{}.csv".format(replica_id)), 'w') if clstat_freq != None else None
     rollwriter = csv.writer(rollfile) if rollfile != None else None
     if rollwriter != None:
         rollwriter.writerow(["iter", "E", "E2", "ncl", "clmax", "clmin", "clavg", "AR"])
@@ -1447,18 +1446,18 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
             clmax += max(clsizes)
             clmin += min(clsizes)
             clavg += sum(clsizes) / len(clsizes)
-            np.savetxt(os.path.join(outdir, 'cluster-ids_iter-{:09d}.csv'.format(k)), ids, fmt="%d", delimiter=',')
-            np.savetxt(os.path.join(outdir, 'spins_iter-{:09d}.csv'.format(k)), spin_array, fmt="%d", delimiter=',')
+            np.savetxt(os.path.join(outdir, 'cluster-ids_rid-{:06d}_iter-{:09d}.csv'.format(replica_id, k)), ids, fmt="%d", delimiter=',')
+            np.savetxt(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.csv'.format(replica_id, k)), spin_array, fmt="%d", delimiter=',')
             if do_plots:
                 plt.imshow(ids)
-                plt.savefig(os.path.join(outdir, 'cluster-ids_iter-{:09d}.png'.format(k)))
+                plt.savefig(os.path.join(outdir, 'cluster-ids_rid-{:06d}_iter-{:09d}.png'.format(replica_id, k)))
                 plt.clf()
                 plt.imshow(spin_array)
-                plt.savefig(os.path.join(outdir, 'spins_iter-{:09d}.png'.format(k)))
+                plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.png'.format(replica_id, k)))
                 plt.clf()
             rollwriter.writerow([k, Esum / k, E2sum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clmin / k * clstat_freq, clavg / k * clstat_freq, nacc / k]) 
         if k % outfreq == 0:
-            print('iter = {}, % = {:.2f}, AR = {}, E_roll = {}, ncls_roll = {}, clmax_roll = {}, clavg_roll = {}'.format(k, k / niters, nacc / k, Esum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clavg / k * clstat_freq))
+            print('rid = {}, iter = {}, % = {:.2f}, AR = {}, E_roll = {}, ncls_roll = {}, clmax_roll = {}, clavg_roll = {}'.format(replica_id, k, k / niters, nacc / k, Esum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clavg / k * clstat_freq))
 
     if rollfile != None:
         rollfile.close()
@@ -1473,7 +1472,7 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
             "ARn0" : nacc_nonzero_energy / niters
             }
 
-def main(kT=1.0, J=1.0, niters=1000000, burnin=200000, burnin_schedule=[1000,100,10,2,1], nrows=40, ncols=40, vf=0.5, clstat_freq=500, outfreq=1000, outdir="temp", do_plots=False):
+def main(kT=1.0, J=1.0, niters=1000000, burnin=200000, burnin_schedule=[1000,100,10,2,1], nrows=40, ncols=40, vf=0.5, clstat_freq=500, outfreq=1000, outdir="temp", do_plots=False, replica_id=1):
     global spin_array
 
     global boundary_atoms_list_specie1
@@ -1552,18 +1551,18 @@ def main(kT=1.0, J=1.0, niters=1000000, burnin=200000, burnin_schedule=[1000,100
 
     Path(outdir).mkdir(parents=True, exist_ok=True)
     for kTmult in burnin_schedule:
-        print("Burn in for {} steps at {} kT ...".format(burnin, kT*kTmult))
+        print("Burn in for {} steps at {} kT (rid = {})...".format(burnin, kT*kTmult, replica_id))
         burnin_results = simulate(kT*kTmult, nrows, ncols, burnin, J, clstat_freq=None, outfreq=None)
         print("Burn in complete!")
 
-    sim_results = simulate(kT, nrows, ncols, niters, J, clstat_freq=clstat_freq, outfreq=outfreq, outdir=outdir, do_plots=do_plots)
+    sim_results = simulate(kT, nrows, ncols, niters, J, clstat_freq=clstat_freq, outfreq=outfreq, outdir=outdir, do_plots=do_plots, replica_id=replica_id)
     print()
-    print('Thermodynamic averages')
+    print('Thermodynamic averages (rid = {})'.format(replica_id))
     print('----------------------')
     for (k, v) in sim_results.items():
         print('    <{}> = {}'.format(k, v))
-    np.save(os.path.join(outdir, "results.npy"), sim_results)
-    with open(os.path.join(outdir, "results.json"), 'w') as file:
+    np.save(os.path.join(outdir, "results_rid-{}.npy".format(replica_id)), sim_results)
+    with open(os.path.join(outdir, "results_rid-{}.json".format(replica_id)), 'w') as file:
         file.write(json.dumps(sim_results))
     
     boundary_atoms_dict_specie1 = {}
