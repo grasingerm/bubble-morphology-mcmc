@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import math
 import matplotlib.pyplot as plt 
@@ -1426,9 +1427,9 @@ def cluster_diams(ids, nclusters):
             (i, j) = (a // ncols, a % ncols)
             (k, l) = (b // ncols, b % ncols)
             aid = ids[i, j]
-            if aid != ids[k, l]:
+            if aid == -1 or aid != ids[k, l]:
                 continue
-            d = (i - k + 1)**2 + (j - l + 1)**2
+            d = (abs(i - k) + 1)**2 + (abs(j - l) + 1)**2
             cidx = aid-2 # id in cluster array is 2 less since cluster indexing starts at 2
             if d > diams[cidx]:
                 diams[cidx] = d
@@ -1474,17 +1475,6 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
             for (mult, stat, plabel) in zip(clstat_mults, clstats, plabels):
                 (ids, nclusters) = compute_cluster_ids(mult*spin_array)
                 assert(nclusters > 0)
-                stat.ncl += nclusters
-                clsizes = [np.sum(ids == i) for i in range(2, nclusters+2)] # maximum cluster id is the nclusters+1, so iterate until nclusters+2
-                stat.clmax += max(clsizes)
-                stat.clmin += min(clsizes)
-                stat.clavg += sum(clsizes) / len(clsizes)
-                cdiams = cluster_diams(ids, nclusters)
-                stat.dmax += max(cdiams)
-                stat.davg += sum(cdiams) / len(cdiams)
-                es = [math.sqrt(1 - (4*A / (math.pi*d**2))**2) for (A, d) in zip(clsizes, cdiams)]
-                stat.emax += max(es)
-                stat.eavg += sum(es) / len(es)
                 np.savetxt(os.path.join(outdir, 'cluster-ids_rid-{:06d}_plabel-{}_iter-{:09d}.csv'.format(replica_id, plabel, k)), ids, fmt="%d", delimiter=',')
                 np.savetxt(os.path.join(outdir, 'spins_rid-{:06d}_plabel-{}_iter-{:09d}.csv'.format(replica_id, plabel, k)), mult*spin_array, fmt="%d", delimiter=',')
                 if do_plots:
@@ -1494,6 +1484,19 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
                     plt.imshow(spin_array)
                     plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_plabel-{}_iter-{:09d}.png'.format(replica_id, plabel, k)))
                     plt.clf()
+                stat.ncl += nclusters
+                clsizes = [np.sum(ids == i) for i in range(2, nclusters+2)] # maximum cluster id is the nclusters+1, so iterate until nclusters+2
+                stat.clmax += max(clsizes)
+                stat.clmin += min(clsizes)
+                stat.clavg += sum(clsizes) / len(clsizes)
+                cdiams = cluster_diams(ids, nclusters)
+                stat.dmax += max(cdiams)
+                stat.davg += sum(cdiams) / len(cdiams)
+                es = [math.sqrt(1 - (4*A / (math.pi*d**2))**2) if A > 1 else 0.0 for (A, d) in zip(clsizes, cdiams)]
+                stat.emax += max(es)
+                stat.eavg += sum(es) / len(es)
+ 
+            # write out to csv files
             wrow = [k, Esum / k, E2sum / k]
             for stat in clstats:
                 wrow += [stat.ncl / k * clstat_freq, stat.clmax / k * clstat_freq, stat.clmin / k * clstat_freq, stat.clavg / k * clstat_freq, stat.dmax / k * clstat_freq, stat.davg / k * clstat_freq, stat.emax / k * clstat_freq, stat.eavg / k * clstat_freq]
@@ -1604,13 +1607,17 @@ def main(kT=1.0, J=1.0, niters=1000000, burnin=200000, burnin_schedule=[1000,100
     #initialize boundary/interior atoms list and dicts
     compute_all_atom_types()
 
+    start = time.time()
     Path(outdir).mkdir(parents=True, exist_ok=True)
     for kTmult in burnin_schedule:
         print("Burn in for {} steps at {} kT (rid = {})...".format(burnin, kT*kTmult, replica_id))
         burnin_results = simulate(kT*kTmult, nrows, ncols, burnin, J, clstat_freq=None, outfreq=None)
         print("Burn in complete!")
+    print("Total burn in time: {}".format(time.time()-start))
 
+    start = time.time()
     sim_results = simulate(kT, nrows, ncols, niters, J, clstat_freq=clstat_freq, outfreq=outfreq, outdir=outdir, do_plots=do_plots, replica_id=replica_id)
+    print("Simulation time: {}".format(time.time()-start))
     print()
     print('Thermodynamic averages (rid = {})'.format(replica_id))
     print('----------------------')
