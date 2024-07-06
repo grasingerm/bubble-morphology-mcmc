@@ -17,6 +17,18 @@ import multiprocessing
 import argparse
 import os
 from pathlib import Path
+from dataclasses import dataclass
+
+@dataclass
+class ClusterStats:
+    clmax: float = 0.0
+    clmin: float = 0.0
+    clavg: float = 0.0
+    ncl: int = 0
+    dmax: float = 0.0
+    davg: float = 0.0
+    emax: float = 0.0
+    eavg: float = 0.0
 
 parser = argparse.ArgumentParser(description='MCMC simulation of liquid droplet morphologies')
 parser.add_argument('--kT', type=float, default=10.0, help='temperature')
@@ -1369,6 +1381,7 @@ def update_cluster_ids(ids, sites, nclusters):
     #   if multiple types of neighbors, join clusters
     #       make a list of neighbors with unique cluster ids
     #       update all other cluster ids to first cluster id
+    '''
     for (i, j) in sites:
         nbrs = get_nbrs(ids, i, j)
         unique_ids = []     # gather unique cluster ids
@@ -1390,17 +1403,36 @@ def update_cluster_ids(ids, sites, nclusters):
             ids[i, j] = idd
             for (nbr, nbr_id) in zip(unique_sites, unique_ids):
                 change_cluster_id(ids, nbr, nbr_id, idd)
+    '''
 
 @jit(nopython=False)
 def compute_cluster_ids(spin_array):
-    nclusters = 2
+    cid = 1
     ids = np.copy(spin_array)
     for i in range(spin_array.shape[0]):
         for j in range(spin_array.shape[1]):
             if ids[i, j] == 1:
-                change_cluster_id(ids, (i, j), 1, nclusters)
-                nclusters += 1
-    return (ids, nclusters-1)
+                cid += 1
+                change_cluster_id(ids, (i, j), 1, cid)
+    return (ids, cid-1)
+
+@jit(nopython=False)
+def cluster_diams(ids, nclusters):
+    nrows, ncols = ids.shape
+    nsites = nrows*ncols
+    diams = np.ones(nclusters)
+    for a in range(nsites):
+        for b in range(a+1, nsites):
+            (i, j) = (a // ncols, a % ncols)
+            (k, l) = (b // ncols, b % ncols)
+            aid = ids[i, j]
+            if aid != ids[k, l]:
+                continue
+            d = (i - k + 1)**2 + (j - l + 1)**2
+            cidx = aid-2 # id in cluster array is 2 less since cluster indexing starts at 2
+            if d > diams[cidx]:
+                diams[cidx] = d
+    return list(map(math.sqrt, diams))
 
 # Temperature or kb*T can be given relative to J 
 def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir=None, do_plots=False, replica_id=1):
@@ -1415,7 +1447,7 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
     rollfile = open(os.path.join(outdir, "rolling_rid-{}.csv".format(replica_id)), 'w') if clstat_freq != None else None
     rollwriter = csv.writer(rollfile) if rollfile != None else None
     if rollwriter != None:
-        rollwriter.writerow(["iter", "E", "E2", "ncl", "clmax", "clmin", "clavg", "AR"])
+        rollwriter.writerow(["iter", "E", "E2", "ncl1", "clmax1", "clmin1", "clavg1", "dmax1", "davg1", "emax1", "eavg1", "ncl2", "clmax2", "clmin2", "clavg2", "dmax2", "davg2", "emax2", "eavg2", "AR"])
     if clstat_freq == None:
         clstat_freq = niters+1      # don't compute cluster statistics
     if outfreq == None:
@@ -1425,10 +1457,9 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
     nacc_nonzero_energy = 0
     Esum = 0
     E2sum = 0
-    clmax = 0
-    clmin = 0
-    clavg = 0
-    ncl = 0
+    clstats = [ClusterStats(), ClusterStats()]
+    clstat_mults = [1, -1]
+    plabels = ['1', '2']
 
     for k in range(1, niters+1):
         proposed_move_state, E_new = propose_move(E_total, J, kT, max_power)
@@ -1440,34 +1471,58 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
         Esum += E_total
         E2sum += E_total*E_total
         if k % clstat_freq == 0:
-            (ids, nclusters) = compute_cluster_ids(spin_array)
-            ncl += (nclusters - 1)
-            clsizes = [np.sum(ids == i) for i in range(2, nclusters+1)]
-            clmax += max(clsizes)
-            clmin += min(clsizes)
-            clavg += sum(clsizes) / len(clsizes)
-            np.savetxt(os.path.join(outdir, 'cluster-ids_rid-{:06d}_iter-{:09d}.csv'.format(replica_id, k)), ids, fmt="%d", delimiter=',')
-            np.savetxt(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.csv'.format(replica_id, k)), spin_array, fmt="%d", delimiter=',')
-            if do_plots:
-                plt.imshow(ids)
-                plt.savefig(os.path.join(outdir, 'cluster-ids_rid-{:06d}_iter-{:09d}.png'.format(replica_id, k)))
-                plt.clf()
-                plt.imshow(spin_array)
-                plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.png'.format(replica_id, k)))
-                plt.clf()
-            rollwriter.writerow([k, Esum / k, E2sum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clmin / k * clstat_freq, clavg / k * clstat_freq, nacc / k]) 
+            for (mult, stat, plabel) in zip(clstat_mults, clstats, plabels):
+                (ids, nclusters) = compute_cluster_ids(mult*spin_array)
+                assert(nclusters > 0)
+                stat.ncl += nclusters
+                clsizes = [np.sum(ids == i) for i in range(2, nclusters+2)] # maximum cluster id is the nclusters+1, so iterate until nclusters+2
+                stat.clmax += max(clsizes)
+                stat.clmin += min(clsizes)
+                stat.clavg += sum(clsizes) / len(clsizes)
+                cdiams = cluster_diams(ids, nclusters)
+                stat.dmax += max(cdiams)
+                stat.davg += sum(cdiams) / len(cdiams)
+                es = [math.sqrt(1 - (4*A / (math.pi*d**2))**2) for (A, d) in zip(clsizes, cdiams)]
+                stat.emax += max(es)
+                stat.eavg += sum(es) / len(es)
+                np.savetxt(os.path.join(outdir, 'cluster-ids_rid-{:06d}_plabel-{}_iter-{:09d}.csv'.format(replica_id, plabel, k)), ids, fmt="%d", delimiter=',')
+                np.savetxt(os.path.join(outdir, 'spins_rid-{:06d}_plabel-{}_iter-{:09d}.csv'.format(replica_id, plabel, k)), mult*spin_array, fmt="%d", delimiter=',')
+                if do_plots:
+                    plt.imshow(ids)
+                    plt.savefig(os.path.join(outdir, 'cluster-ids_rid-{:06d}_plabel-{}_iter-{:09d}.png'.format(replica_id, plabel, k)))
+                    plt.clf()
+                    plt.imshow(spin_array)
+                    plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_plabel-{}_iter-{:09d}.png'.format(replica_id, plabel, k)))
+                    plt.clf()
+            wrow = [k, Esum / k, E2sum / k]
+            for stat in clstats:
+                wrow += [stat.ncl / k * clstat_freq, stat.clmax / k * clstat_freq, stat.clmin / k * clstat_freq, stat.clavg / k * clstat_freq, stat.dmax / k * clstat_freq, stat.davg / k * clstat_freq, stat.emax / k * clstat_freq, stat.eavg / k * clstat_freq]
+            wrow.append(nacc / k)
+            rollwriter.writerow(wrow)
         if k % outfreq == 0:
-            print('rid = {}, iter = {}, % = {:.2f}, AR = {}, E_roll = {}, ncls_roll = {}, clmax_roll = {}, clavg_roll = {}'.format(replica_id, k, k / niters, nacc / k, Esum / k, ncl / k * clstat_freq, clmax / k * clstat_freq, clavg / k * clstat_freq))
+            print('rid = {}, iter = {}, % = {:.2f}, AR = {}, E_roll = {}, ncls_roll = {}, clmax_roll = {}, clavg_roll = {}'.format(replica_id, k, k / niters, nacc / k, Esum / k, clstats[0].ncl / k * clstat_freq, clstats[0].clmax / k * clstat_freq, clstats[0].clavg / k * clstat_freq))
 
     if rollfile != None:
         rollfile.close()
 		
     return {
             "E": Esum / niters, "E2" : E2sum / niters, 
-            "ncl" : ncl / niters * clstat_freq,
-            "clmax" : clmax / niters * clstat_freq,
-            "clmin" : clmin / niters * clstat_freq,
-            "clavg" : clavg / niters * clstat_freq,
+            "ncl1" : clstats[0].ncl / niters * clstat_freq,
+            "clmax1" : clstats[0].clmax / niters * clstat_freq,
+            "clmin1" : clstats[0].clmin / niters * clstat_freq,
+            "clavg1" : clstats[0].clavg / niters * clstat_freq,
+            "dmax1" : clstats[0].dmax / niters * clstat_freq,
+            "davg1" : clstats[0].davg / niters * clstat_freq,
+            "emax1" : clstats[0].emax / niters * clstat_freq,
+            "eavg1" : clstats[0].eavg / niters * clstat_freq,
+            "ncl2" : clstats[1].ncl / niters * clstat_freq,
+            "clmax2" : clstats[1].clmax / niters * clstat_freq,
+            "clmin2" : clstats[1].clmin / niters * clstat_freq,
+            "clavg2" : clstats[1].clavg / niters * clstat_freq,
+            "dmax2" : clstats[1].dmax / niters * clstat_freq,
+            "davg2" : clstats[1].davg / niters * clstat_freq,
+            "emax2" : clstats[1].emax / niters * clstat_freq,
+            "eavg2" : clstats[1].eavg / niters * clstat_freq,
             "AR" : nacc / niters,
             "ARn0" : nacc_nonzero_energy / niters
             }
