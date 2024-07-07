@@ -1407,14 +1407,14 @@ def update_cluster_ids(ids, sites, nclusters):
     '''
 
 @jit(nopython=False)
-def compute_cluster_ids(spin_array):
+def compute_cluster_ids(spin_array, pidx):
     cid = 1
     ids = np.copy(spin_array)
     for i in range(spin_array.shape[0]):
         for j in range(spin_array.shape[1]):
-            if ids[i, j] == 1:
+            if ids[i, j] == pidx:
                 cid += 1
-                change_cluster_id(ids, (i, j), 1, cid)
+                change_cluster_id(ids, (i, j), pidx, cid)
     return (ids, cid-1)
 
 @jit(nopython=False)
@@ -1459,7 +1459,7 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
     Esum = 0
     E2sum = 0
     clstats = [ClusterStats(), ClusterStats()]
-    clstat_mults = [1, -1]
+    clstat_pids = [1, -1]
     plabels = ['1', '2']
 
     for k in range(1, niters+1):
@@ -1472,17 +1472,17 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
         Esum += E_total
         E2sum += E_total*E_total
         if k % clstat_freq == 0:
-            for (mult, stat, plabel) in zip(clstat_mults, clstats, plabels):
-                (ids, nclusters) = compute_cluster_ids(mult*spin_array)
+            np.savetxt(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.csv'.format(replica_id, k)), spin_array, fmt="%d", delimiter=',')
+            plt.imshow(spin_array)
+            plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.png'.format(replica_id, k)))
+            plt.clf()
+            for (pid, stat, plabel) in zip(clstat_pids, clstats, plabels):
+                (ids, nclusters) = compute_cluster_ids(spin_array, pid)
                 assert(nclusters > 0)
                 np.savetxt(os.path.join(outdir, 'cluster-ids_rid-{:06d}_plabel-{}_iter-{:09d}.csv'.format(replica_id, plabel, k)), ids, fmt="%d", delimiter=',')
-                np.savetxt(os.path.join(outdir, 'spins_rid-{:06d}_plabel-{}_iter-{:09d}.csv'.format(replica_id, plabel, k)), mult*spin_array, fmt="%d", delimiter=',')
                 if do_plots:
                     plt.imshow(ids)
                     plt.savefig(os.path.join(outdir, 'cluster-ids_rid-{:06d}_plabel-{}_iter-{:09d}.png'.format(replica_id, plabel, k)))
-                    plt.clf()
-                    plt.imshow(spin_array)
-                    plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_plabel-{}_iter-{:09d}.png'.format(replica_id, plabel, k)))
                     plt.clf()
                 stat.ncl += nclusters
                 clsizes = [np.sum(ids == i) for i in range(2, nclusters+2)] # maximum cluster id is the nclusters+1, so iterate until nclusters+2
