@@ -1473,9 +1473,10 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
         E2sum += E_total*E_total
         if k % clstat_freq == 0:
             np.savetxt(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.csv'.format(replica_id, k)), spin_array, fmt="%d", delimiter=',')
-            plt.imshow(spin_array)
-            plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.png'.format(replica_id, k)))
-            plt.clf()
+            if do_plots:
+                plt.imshow(spin_array)
+                plt.savefig(os.path.join(outdir, 'spins_rid-{:06d}_iter-{:09d}.png'.format(replica_id, k)))
+                plt.clf()
             for (pid, stat, plabel) in zip(clstat_pids, clstats, plabels):
                 (ids, nclusters) = compute_cluster_ids(spin_array, pid)
                 assert(nclusters > 0)
