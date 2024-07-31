@@ -26,8 +26,10 @@ class ClusterStats:
     clmin: float = 0.0
     clavg: float = 0.0
     ncl: int = 0
+    dmin: float = 0.0
     dmax: float = 0.0
     davg: float = 0.0
+    emin: float = 0.0
     emax: float = 0.0
     eavg: float = 0.0
 
@@ -1448,7 +1450,7 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
     rollfile = open(os.path.join(outdir, "rolling_rid-{}.csv".format(replica_id)), 'w') if clstat_freq != None else None
     rollwriter = csv.writer(rollfile) if rollfile != None else None
     if rollwriter != None:
-        rollwriter.writerow(["iter", "E", "E2", "ncl1", "clmax1", "clmin1", "clavg1", "dmax1", "davg1", "emax1", "eavg1", "ncl2", "clmax2", "clmin2", "clavg2", "dmax2", "davg2", "emax2", "eavg2", "AR"])
+        rollwriter.writerow(["iter", "E", "E2", "ncl1", "clmax1", "clmin1", "clavg1", "dmin1", "dmax1", "davg1", "emin1", "emax1", "eavg1", "ncl2", "clmax2", "clmin2", "clavg2", "dmin2", "dmax2", "davg2", "emin2", "emax2", "eavg2", "AR"])
     if clstat_freq == None:
         clstat_freq = niters+1      # don't compute cluster statistics
     if outfreq == None:
@@ -1491,16 +1493,18 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
                 stat.clmin += min(clsizes)
                 stat.clavg += sum(clsizes) / len(clsizes)
                 cdiams = cluster_diams(ids, nclusters)
+                stat.dmin += min(cdiams)
                 stat.dmax += max(cdiams)
                 stat.davg += sum(cdiams) / len(cdiams)
                 es = [math.sqrt(1 - (4*A / (math.pi*d**2))**2) if A > 1 else 0.0 for (A, d) in zip(clsizes, cdiams)]
+                stat.emin += min(es)
                 stat.emax += max(es)
                 stat.eavg += sum(es) / len(es)
  
             # write out to csv files
             wrow = [k, Esum / k, E2sum / k]
             for stat in clstats:
-                wrow += [stat.ncl / k * clstat_freq, stat.clmax / k * clstat_freq, stat.clmin / k * clstat_freq, stat.clavg / k * clstat_freq, stat.dmax / k * clstat_freq, stat.davg / k * clstat_freq, stat.emax / k * clstat_freq, stat.eavg / k * clstat_freq]
+                wrow += [stat.ncl / k * clstat_freq, stat.clmax / k * clstat_freq, stat.clmin / k * clstat_freq, stat.clavg / k * clstat_freq, stat.dmin / k * clstat_freq, stat.dmax / k * clstat_freq, stat.davg / k * clstat_freq, stat.emin / k * clstat_freq, stat.emax / k * clstat_freq, stat.eavg / k * clstat_freq]
             wrow.append(nacc / k)
             rollwriter.writerow(wrow)
         if k % outfreq == 0:
@@ -1515,16 +1519,20 @@ def simulate(kT, nrows, ncols, niters, J, clstat_freq=None, outfreq=None, outdir
             "clmax1" : clstats[0].clmax / niters * clstat_freq,
             "clmin1" : clstats[0].clmin / niters * clstat_freq,
             "clavg1" : clstats[0].clavg / niters * clstat_freq,
+            "dmin1" : clstats[0].dmin / niters * clstat_freq,
             "dmax1" : clstats[0].dmax / niters * clstat_freq,
             "davg1" : clstats[0].davg / niters * clstat_freq,
+            "emin1" : clstats[0].emin / niters * clstat_freq,
             "emax1" : clstats[0].emax / niters * clstat_freq,
             "eavg1" : clstats[0].eavg / niters * clstat_freq,
             "ncl2" : clstats[1].ncl / niters * clstat_freq,
             "clmax2" : clstats[1].clmax / niters * clstat_freq,
             "clmin2" : clstats[1].clmin / niters * clstat_freq,
             "clavg2" : clstats[1].clavg / niters * clstat_freq,
+            "dmin2" : clstats[1].dmin / niters * clstat_freq,
             "dmax2" : clstats[1].dmax / niters * clstat_freq,
             "davg2" : clstats[1].davg / niters * clstat_freq,
+            "emin2" : clstats[1].emin / niters * clstat_freq,
             "emax2" : clstats[1].emax / niters * clstat_freq,
             "eavg2" : clstats[1].eavg / niters * clstat_freq,
             "AR" : nacc / niters,
