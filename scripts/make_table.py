@@ -25,7 +25,7 @@ for d in os.listdir():
     print()
     if len(headers) == 0:
         headers = list(result.keys())
-        csvwriter.writerow(headers)
+        csvwriter.writerow(['kT', 'vf'] + headers)
     csvwriter.writerow([kT_val, vf_val] + [result[k] for k in headers])
 
 csvfile.close()
