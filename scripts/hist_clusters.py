@@ -7,7 +7,13 @@ import matplotlib.pyplot as plt
 import math
 from multiprocessing import Pool
 import time
+from numba import jit, types, typed
+from numba.experimental import jitclass
+from numba.typed import List
+import numba as nb
+import ctypes
 
+@jit(nopython=False)
 def cluster_diams(ids, nclusters):
     nrows, ncols = ids.shape
     nsites = nrows*ncols
